@@ -1,0 +1,328 @@
+---
+title: "Twitter Coverage of AusPreserves"
+author: "Peter Neish"
+date: "`r Sys.time()`"
+output: 
+  html_document: 
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(rtweet)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(knitr)
+library(wordcloud)
+library(tidytext)
+library(igraph)
+
+theme_set(theme_light())
+
+auspreserves <- readRDS("data/auspreserves.rds")
+```
+
+# Introduction
+An analysis of tweets from auspreserves. Code is available on [GitHub](https://github.com/peterneish/auspreserves-tweets).
+
+`r nrow(auspreserves)`
+tweets were collected using the `rtweet` R package:
+
+```{r search-twitter, eval=FALSE, echo=TRUE}
+auspreserves <- search_tweets("#auspreserves", 10000)
+saveRDS(auspreserves, "data/auspreserves.rds")
+```
+
+## Search all the hashtags!
+```{r hashtags}
+auspreserves %>% 
+  filter(is_retweet == FALSE) %>% 
+  unnest_tokens(tags, hashtags) %>% 
+  filter(!is.na(tags)) %>% 
+  count(tags) %>% 
+  arrange(desc(n)) %>% 
+  slice(1:20) %>% 
+  ggplot(aes(reorder(tags, n), n)) + 
+    geom_col(fill = "skyblue3") + 
+    coord_flip() + 
+    labs(x = "hashtag", y = "count",
+         title = "Hashtags used during auspreserves", 
+         subtitle = "Top 20 hashtags in non-retweets")
+```
+
+# Timeline
+## Tweets by day
+```{r tweets-by-day}
+auspreserves %>% 
+  mutate(date = as_date(created_at, tz = "Australia/Melbourne")) %>% 
+  count(date) %>% 
+  ggplot(aes(date, n)) + geom_col(fill = "skyblue3") +  
+    labs(x = "Date", y = "Tweets", title = "#auspreserves tweets per day") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Tweets by day and time
+Filtered for dates August 21-25, Melbourne time.
+```{r tweets-by-day-hour}
+auspreserves %>% 
+  mutate(datetime = as_datetime(created_at, tz = "Australia/Melbourne"),
+         hour = hour(datetime)) %>% 
+  group_by(date = as_date(datetime), hour) %>% 
+  summarise(count = n()) %>% 
+  filter(date >= as_date("2018-02-16"), date <= as_date("2018-02-16")) %>% 
+  ggplot(aes(hour, count)) +
+    geom_col(fill = "skyblue3") +
+    facet_grid(strftime(date, "%b %d") ~ .) + 
+    labs(x = "Hour", y = "Tweets", title = "#auspreserves tweets by time of day") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+# Users
+## Top tweeters
+```{r tweets-top-users}
+auspreserves %>% 
+  count(screen_name) %>% 
+  arrange(desc(n)) %>%
+  slice(1:20) %>% 
+  ggplot(aes(reorder(screen_name, n), n)) +
+    geom_col(fill = "skyblue3") +
+    coord_flip() + 
+    labs(x = "Screen Name", y = "Tweets",
+         title = "#auspreserves tweets by user",
+         subtitle = "top 20 users") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Sources
+```{r tweets-top-sources}
+auspreserves %>% 
+  distinct(screen_name, source) %>%
+  count(source) %>% 
+  filter(n >= 5) %>% 
+  ggplot(aes(reorder(source, n), n)) +
+    geom_col(fill = "skyblue3") +
+    coord_flip() + 
+    labs(x = "Source", y = "Tweets",
+         title = "#auspreserves tweets by source",
+         subtitle = "distinct(screen_name, source) with >= 5 tweets") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+# Networks
+## Replies
+The "replies network", composed from users who reply directly to one another, 
+coloured by page rank.
+
+Click to view image.
+
+```{r reply-network}
+auspreserves_replies <- auspreserves %>% 
+  filter(!is.na(in_reply_to_status_screen_name)) %>% 
+  select(screen_name, in_reply_to_status_screen_name) %>% 
+  graph.data.frame(directed = TRUE)
+
+V(auspreserves_replies)$label <- V(auspreserves_replies)$name
+V(auspreserves_replies)$id    <- V(auspreserves_replies)$name
+
+write_graph(auspreserves_replies, file = "data/auspreserves_replies.graphml",
+            format = "graphml")
+```
+
+ [![replies](data/replies.svg)](data/replies.svg)
+
+## Mentions
+The "mentions network", where users mention other users in their tweets.
+Filtered for k-core >= 4 and coloured by modularity class.
+
+Click to show image.
+
+```{r mentions-network}
+auspreserves_mentions <- auspreserves %>% 
+  filter(!is.na(mentions_screen_name)) %>% 
+  select(screen_name, mentions_screen_name) %>% 
+  mutate(mentions_screen_name = strsplit(mentions_screen_name, " ")) %>% 
+  unnest(mentions_screen_name) %>% 
+  graph.data.frame()
+
+V(auspreserves_mentions)$label <- V(auspreserves_mentions)$name
+V(auspreserves_mentions)$id    <- V(auspreserves_mentions)$name
+
+write_graph(auspreserves_mentions, file = "data/auspreserves_mentions.graphml",
+            format = "graphml")
+```
+
+[![mentions](data/mentions.svg)](data/mentions.svg)
+
+# Retweets
+## Retweet proportion
+```{r is-retweet}
+auspreserves %>% 
+  count(is_retweet) %>% 
+  ggplot(aes(is_retweet, n)) + geom_col(fill = "skyblue3") + 
+    labs(x = "Is retweet", y = "Tweets",
+         title = "#auspreserves tweets by retweet status") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Retweet count
+```{r retweet-count}
+auspreserves %>% 
+  ggplot(aes(retweet_count)) +
+    geom_histogram(bins = max(auspreserves$retweet_count), fill = "skyblue3") +
+    labs(x = "Retweet count", y = "Tweets",
+         title = "#auspreserves distribution of retweets per tweet") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Top retweets
+```{r most-retweeted}
+auspreserves %>% 
+  filter(is.na(retweet_status_id)) %>% 
+  select(screen_name, text, retweet_count) %>% 
+  arrange(desc(retweet_count)) %>% 
+  distinct() %>%
+  slice(1:10) %>% 
+  kable(format = "html")
+```
+
+# Favourites
+## Favourite proportion
+```{r has-favorite}
+auspreserves %>% 
+  mutate(has_favorite = ifelse(favorite_count > 0, TRUE, FALSE)) %>% 
+  count(has_favorite) %>%
+  ggplot(aes(has_favorite, n)) + geom_col(fill = "skyblue3") + 
+    labs(x = "Has favorite", y = "Tweets",
+         title = "#auspreserves tweets by favorited status") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Favourite count
+```{r favorite-count}
+auspreserves %>% 
+  ggplot(aes(favorite_count)) +
+    geom_histogram(bins = max(auspreserves$favorite_count), fill = "skyblue3") +
+    labs(x = "Favorite count", y = "Tweets",
+         title = "#auspreserves distribution of favorites per tweet") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Top favourites
+```{r most-favorited}
+auspreserves %>% 
+  select(screen_name, text, favorite_count) %>% 
+  arrange(desc(favorite_count)) %>% 
+  distinct() %>%
+  slice(1:10) %>% 
+  kable(format = "html")
+```
+
+# Quotes
+## Quote proportion
+```{r is-quote}
+auspreserves %>% 
+  count(is_quote_status) %>% 
+  ggplot(aes(is_quote_status, n)) +
+    geom_col(fill = "skyblue3") + 
+    labs(x = "Is quote", y = "Tweets",
+         title = "#auspreserves tweets by quote status") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Quote count
+```{r quotes-count}
+auspreserves %>% 
+  filter(!is.na(quote_status_id)) %>% 
+  count(quote_status_id) %>% 
+  ggplot(aes(n)) + geom_histogram(bins = 10, fill = "skyblue3") +
+    labs(x = "Quote count", y = "Tweets",
+         title = "#auspreserves distribution of quotes per tweet") + 
+    scale_x_continuous(limits = c(0, 10), breaks = seq(0, 10, 2)) + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Top quotes
+```{r most-quoted}
+auspreserves %>% 
+  filter(!is.na(quote_status_id)) %>% 
+  count(quote_status_id) %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n)) %>% 
+#  slice(1:10) %>% 
+  inner_join(select(auspreserves, screen_name, quote_status_id,
+                    is_retweet, text)) %>% 
+  filter(is_retweet == FALSE) %>% 
+  select(screen_name, text, quote_count = n) %>%
+  distinct() %>%
+  slice(1:10) %>%
+  kable(format = "html")
+```
+
+# Media
+## Media count
+```{r has-media}
+auspreserves %>% 
+  mutate(has_media = !is.na(media_id)) %>% 
+  count(has_media) %>% 
+  ggplot(aes(has_media, n)) +
+    geom_col(fill = "skyblue3") + 
+    labs(x = "Has media", y = "Tweets",
+         title = "#auspreserves tweets by media status") + 
+    theme(axis.text = element_text(size = 12),
+          axis.title = element_text(size = 12))
+```
+
+## Top media
+```{r liked-media}
+auspreserves_media <- auspreserves %>% 
+  filter(!is.na(media_id)) %>% 
+  arrange(desc(favorite_count)) %>%
+  filter(favorite_count > 0)
+
+auspreserves_media %>%
+  slice(1:10) %>% 
+  select(screen_name, text, favorite_count) %>%
+  kable(format = "html")
+```
+
+### Most liked media images
+![](`r auspreserves_media[1, "media_url"]`)
+![](`r auspreserves_media[2, "media_url"]`)
+![](`r auspreserves_media[3, "media_url"]`)
+![](`r auspreserves_media[4, "media_url"]`)
+![](`r auspreserves_media[5, "media_url"]`)
+
+
+# Tweet text
+The 100 words used 3 or more times.
+
+```{r count-words}
+data("stop_words")
+
+auspreserves %>% 
+  filter(is_retweet == FALSE) %>% 
+  unnest_tokens(word, text) %>% 
+  select(word) %>% 
+  filter(!word %in% c("auspreserves", "https", "t.co", "amp"),
+         !word %in% tolower(auspreserves$screen_name), 
+         !grepl("^\\d+$", word)) %>% 
+  anti_join(stop_words) %>% 
+  count(word) %>% 
+  with(wordcloud(word, n, max.words = 100, min.freq = 3,
+                 colors = brewer.pal(6, "Spectral")))
+```
